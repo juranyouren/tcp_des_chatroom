@@ -1,4 +1,5 @@
 #include "tcp_socket.h"
+#include <ctype.h>
 
 // 密钥定义
 #define KEY "benbemmi"  // 8字节密钥
@@ -35,7 +36,7 @@ int main() {
         socket.SecretChat(KEY, KEY_LEN);
     } else if (choice == 'c' || choice == 'C') {
         // 客户端模式
-        char server_ip[64];
+        char server_ip[64] = {0};
         
         // 获取服务器IP地址
         printf("Please input the server address:\n");
@@ -44,10 +45,20 @@ int main() {
             return 1;
         }
         
-        // 去除换行符
+        // 去除换行符和空白字符
         int len = strlen(server_ip);
-        if (server_ip[len - 1] == '\n') {
+        while (len > 0 && (isspace(server_ip[len - 1]) || server_ip[len - 1] == '\n')) {
             server_ip[len - 1] = '\0';
+            len--;
+        }
+        
+        // 打印输入的地址用于调试
+        printf("Connecting to server: '%s'\n", server_ip);
+        
+        // 检查IP地址是否为空
+        if (len == 0) {
+            fprintf(stderr, "Server address cannot be empty\n");
+            return 1;
         }
         
         // 连接到服务器
@@ -59,7 +70,7 @@ int main() {
         // 开始加密聊天
         socket.SecretChat(KEY, KEY_LEN);
     } else {
-        fprintf(stderr, "Invalid choice. Please enter 's' for server or 'c' for client.\n");
+        fprintf(stderr, "Invalid choice. Please enter 'S' for Server or 'C' for Client.\n");
         return 1;
     }
     
