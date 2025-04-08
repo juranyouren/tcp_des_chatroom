@@ -252,6 +252,13 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
                 continue;
             }
             
+            // 显示加密后的内容（十六进制格式）
+            printf("加密后的数据 (HEX): ");
+            for (int i = 0; i < encrypted_len; i++) {
+                printf("%02X ", (unsigned char)encrypted[i]);
+            }
+            printf("\n");
+            
             // 发送加密消息
             if (!SendData(encrypted, encrypted_len)) {
                 fprintf(stderr, "Send failed\n");
@@ -276,6 +283,13 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
                 // 连接已关闭或出错
                 break;
             }
+            
+            // 显示接收到的加密数据
+            printf("接收到加密数据 (HEX): ");
+            for (int i = 0; i < n; i++) {
+                printf("%02X ", (unsigned char)buffer[i]);
+            }
+            printf("\n");
             
             // 解密消息
             int decrypted_len = BUFFER_SIZE;
