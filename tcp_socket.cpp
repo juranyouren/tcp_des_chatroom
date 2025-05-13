@@ -9,6 +9,9 @@ CTcpSocket::CTcpSocket() {
     // 初始化地址结构
     memset(&m_server_addr, 0, sizeof(m_server_addr));
     memset(&m_client_addr, 0, sizeof(m_client_addr));
+
+    // 初始化DES密钥
+    memset(m_des_key, 0, sizeof(m_des_key));
 }
 
 // 析构函数
@@ -17,7 +20,7 @@ CTcpSocket::~CTcpSocket() {
     CloseSocket();
 }
 
-// 初始化服务器
+// 初始化服务器并完成密钥交换
 bool CTcpSocket::InitServer(int port) {
     // 创建套接字
     m_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -92,7 +95,55 @@ int CTcpSocket::AcceptConnection() {
     return m_client_socket;
 }
 
-// 连接到服务器
+// 启动服务端安全通信，包含RSA密钥交换
+bool CTcpSocket::StartSecureServer() {
+    // 检查套接字状态
+    if (m_client_socket < 0) {
+        return false;
+    }
+
+    printf("开始RSA密钥交换...\n");
+    
+    // 生成RSA密钥对
+    m_rsa.GenerateKeys();
+    
+    // 获取公钥
+    RSA::PublicKey pub_key = m_rsa.GetPublicKey();
+    printf("服务器生成的RSA公钥: e=%llu, n=%llu\n", pub_key.e, pub_key.n);
+    
+    // 发送公钥给客户端
+    if (!SendData((char*)&pub_key, sizeof(pub_key))) {
+        perror("发送RSA公钥失败");
+        return false;
+    }
+    printf("已发送RSA公钥给客户端\n");
+    
+    // 接收加密后的DES密钥
+    uint64_t encrypted_des_key[4];
+    if (RecvData((char*)encrypted_des_key, sizeof(encrypted_des_key)) <= 0) {
+        perror("接收加密DES密钥失败");
+        return false;
+    }
+    printf("已接收客户端加密的DES密钥\n");
+    
+    // 解密DES密钥
+    RSA::PrivateKey priv_key = m_rsa.GetPrivateKey();
+    unsigned short* key_parts = (unsigned short*)m_des_key;
+    for (int i = 0; i < 4; i++) {
+        key_parts[i] = (unsigned short)RSA::Decrypt(encrypted_des_key[i], priv_key);
+    }
+    
+    printf("DES密钥解密完成 (HEX): ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02X ", (unsigned char)m_des_key[i]);
+    }
+    printf("\n");
+    
+    // 开始加密通信
+    return SecretChat(m_des_key, 8);
+}
+
+// 连接到服务器并完成密钥交换
 bool CTcpSocket::ConnectToServer(const char* server_ip, int port) {
     // 创建套接字
     m_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -121,12 +172,65 @@ bool CTcpSocket::ConnectToServer(const char* server_ip, int port) {
         return false;
     }
     
-    printf("Connect Success!\n");
-    printf("Begin to chat...\n");
+    printf("连接成功！\n");
     
     m_is_server = false;
     m_client_socket = m_socket; // 客户端模式下，client_socket与socket相同
     return true;
+}
+
+// 启动客户端安全通信，包含RSA密钥交换
+bool CTcpSocket::StartSecureClient() {
+    // 检查套接字状态
+    if (m_client_socket < 0) {
+        return false;
+    }
+    
+    printf("开始RSA密钥交换...\n");
+    
+    // 接收服务器的RSA公钥
+    RSA::PublicKey pub_key;
+    if (RecvData((char*)&pub_key, sizeof(pub_key)) <= 0) {
+        perror("接收RSA公钥失败");
+        return false;
+    }
+    printf("已接收服务器RSA公钥: e=%llu, n=%llu\n", pub_key.e, pub_key.n);
+    
+    // 生成随机DES密钥
+    GenerateDesKey(m_des_key, 8);
+    printf("已生成DES密钥 (HEX): ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02X ", (unsigned char)m_des_key[i]);
+    }
+    printf("\n");
+    
+    // 加密DES密钥
+    uint64_t encrypted_des_key[4];
+    unsigned short* key_parts = (unsigned short*)m_des_key;
+    for (int i = 0; i < 4; i++) {
+        encrypted_des_key[i] = RSA::Encrypt((uint64_t)key_parts[i], pub_key);
+    }
+    
+    // 发送加密后的DES密钥
+    if (!SendData((char*)encrypted_des_key, sizeof(encrypted_des_key))) {
+        perror("发送加密DES密钥失败");
+        return false;
+    }
+    printf("已发送加密的DES密钥给服务器\n");
+    
+    // 开始加密通信
+    return SecretChat(m_des_key, 8);
+}
+
+// 生成随机DES密钥
+void CTcpSocket::GenerateDesKey(char* key, int key_len) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 255);
+    
+    for (int i = 0; i < key_len; i++) {
+        key[i] = dis(gen);
+    }
 }
 
 // 发送数据

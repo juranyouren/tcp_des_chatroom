@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 
 #include "des.h"
+#include "rsa.h" // 添加RSA头文件
 
 // 定义常量
 #define BUFFER_SIZE 1024  // 缓冲区大小
@@ -30,9 +31,11 @@ public:
     bool InitServer(int port = DEFAULT_PORT);  // 初始化服务器
     bool StartListen();                        // 开始监听
     int AcceptConnection();                    // 接受连接
+    bool StartSecureServer();                  // 启动服务端安全通信，包含RSA密钥交换
 
     // 客户端方法
     bool ConnectToServer(const char* server_ip, int port = DEFAULT_PORT);  // 连接到服务器
+    bool StartSecureClient();                  // 启动客户端安全通信，包含RSA密钥交换
 
     // 通用方法
     bool SendData(const char* data, int data_len);  // 发送数据
@@ -42,6 +45,7 @@ public:
 
     // 加密通信方法
     bool SecretChat(const char* key, int key_len);   // 加密聊天主函数
+    void GenerateDesKey(char* key, int key_len);     // 生成随机DES密钥
 
 private:
     int m_socket;                // 套接字描述符
@@ -50,6 +54,9 @@ private:
     struct sockaddr_in m_client_addr;  // 客户端地址
     bool m_is_server;            // 是否为服务器
     CDesOperate m_des;           // DES加密对象
+    
+    RSA m_rsa;                   // RSA加密对象
+    char m_des_key[8];           // DES密钥
 };
 
 #endif // TCP_SOCKET_H
