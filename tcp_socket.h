@@ -15,6 +15,7 @@
 
 #include "des.h"
 #include "rsa.h" // 添加RSA头文件
+#include "logger.h" // 添加日志系统头文件
 
 // 定义常量
 #define BUFFER_SIZE 1024  // 缓冲区大小

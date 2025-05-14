@@ -1,4 +1,6 @@
 #include "tcp_socket.h"
+#include <sstream>  // 添加对stringstream的支持
+#include <iomanip>  // 添加对setw, setfill等格式化输出的支持
 
 // 构造函数
 CTcpSocket::CTcpSocket() {
@@ -102,55 +104,69 @@ bool CTcpSocket::StartSecureServer() {
         return false;
     }
 
-    std::cout << "\n[服务端] 开始RSA密钥交换和DES安全通信建立..." << std::endl;
+    // 初始化日志系统（如果是第一次调用）
+    static bool logInitialized = false;
+    if (!logInitialized) {
+        LOG_INIT("chatroom_server.log", INFO, DEBUG);
+        logInitialized = true;
+    }
+    
+    LOG_INFO("开始RSA密钥交换和DES安全通信建立...");
+    std::cout << "\n[服务端] 正在建立安全通信..." << std::endl;
     
     // 生成RSA密钥对
-    std::cout << "[服务端] 生成RSA密钥对" << std::endl;
     m_rsa.GenerateKeys();
     
     // 获取公钥
     RSA::PublicKey pub_key = m_rsa.GetPublicKey();
     RSA::PrivateKey priv_key = m_rsa.GetPrivateKey();
-    std::cout << "[服务端] 生成的RSA公钥: e=" << pub_key.e << ", n=" << pub_key.n << std::endl;
-    std::cout << "[服务端] 生成的RSA私钥: d=" << priv_key.d << ", n=" << priv_key.n << std::endl;
+    LOG_DEBUG("生成的RSA公钥: e=" + std::to_string(pub_key.e) + ", n=" + std::to_string(pub_key.n));
+    LOG_DEBUG("生成的RSA私钥: d=" + std::to_string(priv_key.d) + ", n=" + std::to_string(priv_key.n));
+    std::cout << "[服务端] 已生成RSA密钥对" << std::endl;
     
     // 发送公钥给客户端
-    std::cout << "[服务端] 发送公钥 (e,n) = (" << pub_key.e << "," << pub_key.n << ")" << std::endl;
+    LOG_DEBUG("发送公钥 (e,n) = (" + std::to_string(pub_key.e) + "," + std::to_string(pub_key.n) + ")");
     if (!SendData((char*)&pub_key, sizeof(pub_key))) {
-        perror("发送RSA公钥失败");
+        LOG_ERROR("发送RSA公钥失败");
+        std::cerr << "[服务端] 发送公钥失败" << std::endl;
         return false;
     }
-    std::cout << "[服务端] 已发送RSA公钥给客户端" << std::endl;
+    LOG_INFO("已发送RSA公钥给客户端");
+    std::cout << "[服务端] 公钥交换完成" << std::endl;
     
     // 接收加密后的DES密钥
     uint64_t encrypted_des_key[4];
     int recv_bytes = RecvData((char*)encrypted_des_key, sizeof(encrypted_des_key));
     if (recv_bytes <= 0) {
-        perror("接收加密DES密钥失败");
+        LOG_ERROR("接收加密DES密钥失败");
+        std::cerr << "[服务端] 接收加密密钥失败" << std::endl;
         return false;
     }
-    std::cout << "[服务端] 接收加密的DES密钥: " << recv_bytes << " 字节" << std::endl;
+    LOG_INFO("接收加密的DES密钥: " + std::to_string(recv_bytes) + " 字节");
+    std::cout << "[服务端] 已接收加密密钥" << std::endl;
     
-    std::cout << "[服务端] 加密后的DES密钥块: ";
-    for(int i=0; i<4; i++) std::cout << encrypted_des_key[i] << " ";
-    std::cout << std::endl;
+    // 记录加密后的DES密钥块到日志中
+    std::stringstream ss;
+    ss << "加密后的DES密钥块: ";
+    for(int i=0; i<4; i++) ss << encrypted_des_key[i] << " ";
+    LOG_DEBUG(ss.str());
     
     // 解密DES密钥
-    std::cout << "\n[服务端] 使用私钥解密DES密钥..." << std::endl;
+    LOG_DEBUG("使用私钥解密DES密钥...");
     unsigned short* key_parts = (unsigned short*)m_des_key;
     for (int i = 0; i < 4; i++) {
-        std::cout << "[服务端] 解密块" << i << ": " 
-                  << encrypted_des_key[i] << " -> ";
+        std::stringstream ss_block;
+        ss_block << "解密块" << i << ": " << encrypted_des_key[i] << " -> ";
         
         // 检查是否超出n的范围
         if (encrypted_des_key[i] >= priv_key.n) {
-            std::cout << "错误：密文值超出模数n的范围!" << std::endl;
+            LOG_WARNING("密文值超出模数n的范围! 已修正为: " + std::to_string(encrypted_des_key[i] % priv_key.n));
             encrypted_des_key[i] %= priv_key.n;
-            std::cout << "已修正为: " << encrypted_des_key[i] << std::endl;
         }
         
         key_parts[i] = (unsigned short)RSA::Decrypt(encrypted_des_key[i], priv_key);
-        std::cout << key_parts[i] << std::endl;
+        ss_block << key_parts[i];
+        LOG_DEBUG(ss_block.str());
     }
     
     // 转换回主机字节序
@@ -158,21 +174,28 @@ bool CTcpSocket::StartSecureServer() {
         key_parts[i] = ntohs(key_parts[i]);  // 从网络字节序转换回主机字节序
     }
     
-    std::cout << "[服务端] DES密钥解密完成 (HEX): ";
+    // 记录DES密钥到日志
+    ss.str("");
+    ss << "[服务端] 解密后的DES密钥 (HEX): ";
     for (int i = 0; i < 8; i++) {
-        printf("%02X ", (unsigned char)m_des_key[i]);
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(m_des_key[i])) << " ";
     }
-    std::cout << std::endl;
+    LOG_DEBUG(ss.str());
+    std::cout << ss.str() << std::endl;
     
-    // 显示ASCII艺术流程图
-    std::cout << "\n===== RSA密钥交换流程 =====" << std::endl;
-    std::cout << "+-----------------+       +-----------------+\n"
-                 "|   服务端        |       |   客户端        |\n"
-                 "| 生成p,q,n,φ,e,d |------>| 接收公钥(e,n)   |\n"
-                 "| p=" << m_rsa.GetP() << ", q=" << m_rsa.GetQ() << "    |       | 生成DES密钥     |\n"
-                 "| φ(n)=" << m_rsa.GetPhi() << "      |<------| 加密并发送     |\n"
-                 "| 使用私钥d解密   |       +-----------------+\n"
-                 "+-----------------+\n" << std::endl;
+    // 将RSA密钥交换流程记录到日志中
+    LOG_DEBUG("\n===== RSA密钥交换流程 =====\n"
+              "+-----------------+       +-----------------+\n"
+              "|   服务端        |       |   客户端        |\n"
+              "| 生成p,q,n,φ,e,d |------>| 接收公钥(e,n)   |\n"
+              "| p=" + std::to_string(m_rsa.GetP()) + ", q=" + std::to_string(m_rsa.GetQ()) + 
+              "    |       | 生成DES密钥     |\n"
+              "| φ(n)=" + std::to_string(m_rsa.GetPhi()) + 
+              "      |<------| 加密并发送     |\n"
+              "| 使用私钥d解密   |       +-----------------+\n"
+              "+-----------------+\n");
+    
+    std::cout << "[服务端] 准备进入安全聊天模式..." << std::endl;
                  
     // 开始加密通信
     return SecretChat(m_des_key, 8);
@@ -221,97 +244,109 @@ bool CTcpSocket::StartSecureClient() {
         return false;
     }
     
-    std::cout << "\n[客户端] 开始RSA密钥交换和DES安全通信建立..." << std::endl;
+    // 初始化日志系统（如果是第一次调用）
+    static bool logInitialized = false;
+    if (!logInitialized) {
+        LOG_INIT("chatroom_client.log", INFO, DEBUG);
+        logInitialized = true;
+    }
+    
+    LOG_INFO("开始RSA密钥交换和DES安全通信建立...");
+    std::cout << "\n[客户端] 正在建立安全通信..." << std::endl;
     
     // 接收服务器的RSA公钥
     RSA::PublicKey pub_key;
     int recv_bytes = RecvData((char*)&pub_key, sizeof(pub_key));
     if (recv_bytes <= 0) {
-        perror("接收RSA公钥失败");
+        LOG_ERROR("接收RSA公钥失败");
+        std::cerr << "[客户端] 接收服务器公钥失败" << std::endl;
         return false;
     }
-    std::cout << "[客户端] 已接收服务器RSA公钥: e=" << pub_key.e << ", n=" << pub_key.n << std::endl;
+    LOG_DEBUG("已接收服务器RSA公钥: e=" + std::to_string(pub_key.e) + ", n=" + std::to_string(pub_key.n));
+    std::cout << "[客户端] 已接收服务器公钥" << std::endl;
     
     // 验证接收到的公钥是否合法
     if (pub_key.e == 0 || pub_key.n == 0) {
+        LOG_ERROR("接收到的公钥无效");
         std::cerr << "[客户端] 错误: 接收到的公钥无效!" << std::endl;
         return false;
     }
     
     // 生成随机DES密钥
     GenerateDesKey(m_des_key, 8);
-    std::cout << "\n[客户端] 已生成随机DES密钥 (HEX): ";
+    std::stringstream ss_key;
     for (int i = 0; i < 8; i++) {
-        printf("%02X ", (unsigned char)m_des_key[i]);
+        ss_key << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(m_des_key[i])) << " ";
     }
-    std::cout << std::endl;
+    LOG_DEBUG("已生成随机DES密钥 (HEX): " + ss_key.str());
     
     // 加密DES密钥
-    std::cout << "\n[客户端] 使用RSA公钥加密DES密钥..." << std::endl;
+    LOG_DEBUG("使用RSA公钥加密DES密钥...");
     uint64_t encrypted_des_key[4];
     unsigned short* key_parts = (unsigned short*)m_des_key;
     for (int i = 0; i < 4; i++) {
-        std::cout << "[客户端] 加密块" << i << ": " 
-                  << key_parts[i] << " -> ";
+        LOG_DEBUG("加密块" + std::to_string(i) + ": " + std::to_string(key_parts[i]));
         
         // 确保明文小于模数n
         if (key_parts[i] >= pub_key.n) {
-            std::cerr << "警告: 明文值超过模数n，将被截断" << std::endl;
+            LOG_WARNING("明文值超过模数n，将被截断");
             key_parts[i] %= pub_key.n;
         }
         
         encrypted_des_key[i] = RSA::Encrypt((uint64_t)key_parts[i], pub_key);
-        std::cout << encrypted_des_key[i] << std::endl;
+        LOG_DEBUG("块" + std::to_string(i) + "加密结果: " + std::to_string(encrypted_des_key[i]));
     }
     
     // 发送加密后的DES密钥
     if (!SendData((char*)encrypted_des_key, sizeof(encrypted_des_key))) {
-        perror("发送加密DES密钥失败");
+        LOG_ERROR("发送加密DES密钥失败");
+        std::cerr << "[客户端] 加密密钥交换失败" << std::endl;
         return false;
     }
-    std::cout << "[客户端] 已发送加密的DES密钥给服务器" << std::endl;
+    LOG_INFO("已发送加密的DES密钥给服务器");
+    std::cout << "[客户端] 密钥交换成功" << std::endl;
     
-    // 显示ASCII艺术流程图
-    std::cout << "\n===== RSA密钥交换流程 =====" << std::endl;
-    std::cout << "+-----------------+       +-----------------+\n"
-                 "|   服务端        |       |   客户端        |\n"
-                 "| 生成RSA密钥对   |------>| 接收公钥(e,n)=" << pub_key.e << "," << pub_key.n << "\n"
-                 "|                 |       | 生成DES密钥     |\n"
-                 "|                 |<------| 使用公钥加密DES |\n"
-                 "| 使用私钥d解密   |       | 发送密文        |\n"
-                 "+-----------------+       +-----------------+\n" << std::endl;
+    // 将RSA密钥交换流程记录到日志中
+    LOG_DEBUG("\n===== RSA密钥交换流程 =====\n"
+              "+-----------------+       +-----------------+\n"
+              "|   服务端        |       |   客户端        |\n"
+              "| 生成RSA密钥对   |------>| 接收公钥(e,n)=" + std::to_string(pub_key.e) + "," + std::to_string(pub_key.n) + "\n"
+              "|                 |       | 生成DES密钥     |\n"
+              "|                 |<------| 使用公钥加密DES |\n"
+              "| 使用私钥d解密   |       | 发送密文        |\n"
+              "+-----------------+       +-----------------+\n");
     
-    // 执行边界值验证测试
-    std::cout << "\n[客户端] 执行RSA数学边界值验证..." << std::endl;
+    // 执行边界值验证测试（只写入日志文件，不在控制台显示）
+    LOG_DEBUG("执行RSA数学边界值验证...");
     // 创建临时RSA对象用于测试
     RSA test_rsa;
     test_rsa.GenerateKeys(8); // 使用较小的素数便于观察
     RSA::TestEdgeCases(test_rsa);
     
-    // 测试用例验证
+    // 测试用例验证（只写入日志文件）
     uint64_t test_plain = 42;
-    std::cout << "\n===== RSA完整性验证测试 =====" << std::endl;
-    std::cout << "测试明文: " << test_plain << std::endl;
+    LOG_DEBUG("RSA完整性验证测试");
+    LOG_DEBUG("测试明文: " + std::to_string(test_plain));
     
     auto test_pub = test_rsa.GetPublicKey();
     uint64_t test_cipher = RSA::Encrypt(test_plain, test_pub);
     uint64_t test_decrypted = RSA::Decrypt(test_cipher, test_rsa.GetPrivateKey());
     
-    std::cout << "\n验证结果: " 
-              << "原始明文=" << test_plain 
-              << " | 解密结果=" << test_decrypted 
-              << " | 是否一致: " << (test_plain == test_decrypted) 
-              << std::endl;
+    LOG_DEBUG("验证结果: 原始明文=" + std::to_string(test_plain) + 
+              " | 解密结果=" + std::to_string(test_decrypted) + 
+              " | 是否一致: " + std::to_string(test_plain == test_decrypted));
     
-    // 检测基于当前公钥的实际加密测试
-    std::cout << "\n[客户端] 执行实际公钥验证测试..." << std::endl;
+    // 检测基于当前公钥的实际加密测试（只写入日志文件）
+    LOG_DEBUG("执行实际公钥验证测试...");
     uint64_t real_test = 12345;
     if (real_test < pub_key.n) {
         uint64_t real_cipher = RSA::Encrypt(real_test, pub_key);
-        std::cout << "测试值: " << real_test << " -> 加密后: " << real_cipher << std::endl;
+        LOG_DEBUG("测试值: " + std::to_string(real_test) + " -> 加密后: " + std::to_string(real_cipher));
     } else {
-        std::cout << "跳过实际公钥测试: 测试值大于模数" << std::endl;
+        LOG_DEBUG("跳过实际公钥测试: 测试值大于模数");
     }
+    
+    std::cout << "[客户端] 准备进入安全聊天模式..." << std::endl;
     
     // 开始加密通信
     return SecretChat(m_des_key, 8);
@@ -328,11 +363,29 @@ void CTcpSocket::GenerateDesKey(char* key, int key_len) {
         key[i] = dis(gen);
     }
     
-    // 转换为网络字节序（大端）
+    // 记录生成的密钥到日志
+    std::stringstream ss;
+    ss << "[客户端] 生成的DES密钥 (HEX): ";
+    for (int i = 0; i < key_len; i++) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(key[i])) << " ";
+    }
+    LOG_DEBUG(ss.str());
+    std::cout << ss.str() << std::endl;
+    
+    // 确保密钥在网络传输前转换为网络字节序
+    // 这样服务端解密后可以正确还原密钥
     uint16_t* p = reinterpret_cast<uint16_t*>(key);
     for (int i = 0; i < key_len/2; i++) {
-        p[i] = htons(p[i]);  // 转换字节序
+        p[i] = htons(p[i]);  // 转换为网络字节序
     }
+    
+    // 记录转换后的密钥到日志（仅调试用）
+    std::stringstream ss_network;
+    ss_network << "[客户端] 转换为网络字节序后的DES密钥 (HEX): ";
+    for (int i = 0; i < key_len; i++) {
+        ss_network << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(key[i])) << " ";
+    }
+    LOG_DEBUG(ss_network.str());
 }
 
 // 发送数据
@@ -343,16 +396,26 @@ bool CTcpSocket::SendData(const char* data, int data_len) {
         return false;
     }
     
-    // 发送数据
-    int sent = 0;
-    while (sent < data_len) {
-        int n = send(sockfd, data + sent, data_len - sent, 0);
+    // 发送数据并记录实际发送的数据量
+    int total_sent = 0;
+    int bytes_left = data_len;
+    int n;
+    
+    while (total_sent < data_len) {
+        n = send(sockfd, data + total_sent, bytes_left, 0);
         if (n < 0) {
+            LOG_ERROR("发送数据失败: " + std::string(strerror(errno)));
             perror("send failed");
             return false;
         }
-        sent += n;
+        total_sent += n;
+        bytes_left -= n;
     }
+    
+    // 记录发送数据的详细信息到日志
+    std::stringstream ss;
+    ss << "发送数据完成: 总计 " << total_sent << " 字节";
+    LOG_DEBUG(ss.str());
     
     return true;
 }
@@ -374,19 +437,25 @@ int CTcpSocket::RecvData(char* buffer, int buffer_size) {
         n = recv(sockfd, buffer + total, bytesleft, 0);
         if (n <= 0) {
             // 出错或连接关闭
-            if (n < 0) perror("recv failed");
+            if (n < 0) {
+                LOG_ERROR("接收数据失败: " + std::string(strerror(errno)));
+                perror("recv failed");
+            } else {
+                LOG_INFO("连接关闭");
+            }
             return (total > 0) ? total : n;
         }
+        
+        // 记录每次接收的数据块详情
+        std::stringstream ss;
+        ss << "接收数据块: " << n << " 字节，累计: " << (total + n) << "/" << buffer_size;
+        LOG_DEBUG(ss.str());
+        
         total += n;
         bytesleft -= n;
     }
     
-    // 确保字符串结尾有null终止符
-    if (total < buffer_size)
-        buffer[total] = '\0';
-    else
-        buffer[buffer_size - 1] = '\0';
-    
+    LOG_DEBUG("已完整接收所需数据: " + std::to_string(total) + " 字节");
     return total;
 }
 
@@ -431,26 +500,39 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
         return false;
     }
     
+    // 日志记录密钥信息，控制台只显示简短信息
+    std::stringstream ss;
+    ss << "使用DES密钥 (HEX): ";
+    for (int i = 0; i < key_len; i++) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(key[i])) << " ";
+    }
+    LOG_DEBUG(ss.str());
+    
     // 验证DES密钥是否有效
-    std::cout << "\n[安全通信] 验证DES密钥: ";
+    std::cout << "[安全通信] DES密钥验证" << std::endl;
     bool has_zero_key = true;
     for (int i = 0; i < key_len; i++) {
-        printf("%02X ", (unsigned char)key[i]);
         if (key[i] != 0) has_zero_key = false;
     }
-    std::cout << std::endl;
     
     if (has_zero_key) {
-        std::cerr << "[错误] DES密钥全为零，密钥交换失败!" << std::endl;
+        LOG_ERROR("DES密钥全为零，密钥交换失败!");
+        std::cerr << "[错误] DES密钥交换失败!" << std::endl;
         return false;
     }
+    
+    LOG_INFO("DES密钥验证成功，开始安全通信...");
+    std::cout << "[安全通信] 已建立加密通道，可以开始聊天..." << std::endl;
+    std::cout << "---------------------------------------------" << std::endl;
+    std::cout << "输入 'quit' 退出聊天" << std::endl;
     
     // 创建子进程，实现全双工通信
     pid_t pid = fork();
     
     if (pid < 0) {
         // 创建子进程失败
-        perror("fork failed");
+        LOG_ERROR("子进程创建失败: " + std::string(strerror(errno)));
+        std::cerr << "[错误] 无法启动通信进程" << std::endl;
         return false;
     } else if (pid == 0) {
         // 子进程：负责发送消息
@@ -472,19 +554,20 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
             
             // 检查是否退出
             if (strcmp(input, "quit") == 0) {
+                LOG_INFO("用户请求退出聊天");
                 break;
             }
             
             // 检查输入是否为空
             if (len == 0) {
-                printf("[警告] 不发送空消息\n");
                 continue;
             }
             
             // 加密消息
             int encrypted_len = BUFFER_SIZE;
             if (!m_des.Encry(input, len, encrypted + 4, encrypted_len, key, key_len)) {
-                fprintf(stderr, "[错误] 加密失败\n");
+                LOG_ERROR("消息加密失败");
+                std::cerr << "[错误] 加密失败" << std::endl;
                 continue;
             }
             
@@ -495,22 +578,29 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
             }
             memcpy(encrypted, &crc, 4);
             
-            // 显示加密后的内容（十六进制格式）
-            printf("[发送] 加密数据 (HEX): CRC=%08X | ", crc);
-            for (int i = 0; i < (encrypted_len > 16 ? 16 : encrypted_len); i++) {
-                printf("%02X ", (unsigned char)encrypted[i + 4]);
+            // 详细加密信息写入日志
+            std::stringstream ss_hex;
+            ss_hex << "发送加密数据 (HEX): CRC=" << std::hex << crc << " | ";
+            for (int i = 0; i < (encrypted_len > 32 ? 32 : encrypted_len); i++) {
+                ss_hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(encrypted[i + 4])) << " ";
             }
-            if (encrypted_len > 16) printf("...");
-            printf(" (%d字节)\n", encrypted_len);
+            if (encrypted_len > 32) ss_hex << "...";
+            ss_hex << " (" << std::dec << encrypted_len << "字节)";
+            LOG_DEBUG(ss_hex.str());
+            
+            // 控制台只显示简短信息
+            std::cout << "[发送] " << input << std::endl;
             
             // 发送加密消息
             if (!SendData(encrypted, encrypted_len + 4)) {
-                fprintf(stderr, "[错误] 发送失败\n");
+                LOG_ERROR("发送消息失败: " + std::string(strerror(errno)));
+                std::cerr << "[错误] 发送失败" << std::endl;
                 break;
             }
         }
         
         // 子进程结束
+        LOG_DEBUG("发送进程结束");
         exit(0);
     } else {
         // 父进程：负责接收消息
@@ -525,8 +615,10 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
             int n = RecvData(buffer, BUFFER_SIZE + 4);
             if (n <= 0) {
                 if (n < 0) {
-                    perror("[错误] 接收数据失败");
+                    LOG_ERROR("接收数据失败: " + std::string(strerror(errno)));
+                    std::cerr << "[错误] 接收数据失败" << std::endl;
                 } else {
+                    LOG_INFO("连接已关闭");
                     std::cout << "[通知] 连接已关闭" << std::endl;
                 }
                 break;
@@ -534,7 +626,7 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
             
             // 检查数据长度 (至少需要4字节CRC + 8字节加密数据)
             if (n <= 12) {
-                std::cerr << "[错误] 接收数据长度不足 (" << n << " 字节)" << std::endl;
+                LOG_WARNING("接收数据长度不足: " + std::to_string(n) + " 字节");
                 continue;
             }
             
@@ -550,25 +642,28 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
             
             // 验证校验和
             if (received_crc != calculated_crc) {
-                std::cerr << "[错误] 校验和不匹配: 预期=" << received_crc << ", 计算=" << calculated_crc << std::endl;
+                LOG_ERROR("校验和不匹配: 预期=" + std::to_string(received_crc) + ", 计算=" + std::to_string(calculated_crc));
+                std::cerr << "[错误] 数据校验失败" << std::endl;
                 continue;
             }
             
-            // 显示接收到的加密数据
-            std::cout << "[接收] 加密数据 (HEX): CRC=" << received_crc << " | ";
-            for (int i = 0; i < ((n-4) > 16 ? 16 : (n-4)); i++) {
-                printf("%02X ", (unsigned char)buffer[i + 4]);
+            // 记录接收到的加密数据到日志
+            std::stringstream ss_hex;
+            ss_hex << "接收加密数据 (HEX): CRC=" << std::hex << received_crc << " | ";
+            for (int i = 0; i < ((n-4) > 32 ? 32 : (n-4)); i++) {
+                ss_hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(buffer[i + 4])) << " ";
             }
-            if (n-4 > 16) printf("...");
-            printf(" (%d字节)\n", n-4);
+            if (n-4 > 32) ss_hex << "...";
+            ss_hex << " (" << std::dec << (n-4) << "字节)";
+            LOG_DEBUG(ss_hex.str());
             
             // 解密消息
             int decrypted_len = BUFFER_SIZE;
             if (!m_des.Decry(buffer + 4, n - 4, decrypted, decrypted_len, key, key_len)) {
-                fprintf(stderr, "[错误] 解密失败，可能是密钥不匹配\n");
+                LOG_ERROR("解密失败，可能是密钥不匹配");
                 
                 // 调试信息: 尝试猜测可能的密钥偏移问题
-                fprintf(stderr, "[调试] 尝试修复解密:\n");
+                LOG_DEBUG("尝试修复解密问题...");
                 char temp_key[8];
                 memcpy(temp_key, key, key_len);
                 
@@ -580,8 +675,10 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
                 }
                 
                 if (m_des.Decry(buffer + 4, n - 4, decrypted, decrypted_len, temp_key, key_len)) {
-                    fprintf(stderr, "[警告] 字节序翻转后可以解密成功，请检查密钥交换逻辑\n");
+                    LOG_WARNING("字节序翻转后可以解密成功，请检查密钥交换逻辑");
                 }
+                
+                std::cerr << "[错误] 解密失败" << std::endl;
                 continue;
             }
             
@@ -595,12 +692,16 @@ bool CTcpSocket::SecretChat(const char* key, int key_len) {
             const char* peer_addr = m_is_server ? 
                                    inet_ntoa(m_client_addr.sin_addr) : 
                                    inet_ntoa(m_server_addr.sin_addr);
-            printf("Receive message form <%s>: %s\n", peer_addr, decrypted);
+            LOG_DEBUG("从 " + std::string(peer_addr) + " 接收到解密消息: " + std::string(decrypted));
+            
+            // 控制台显示简洁信息
+            std::cout << "[收到] " << decrypted << std::endl;
         }
         
         // 关闭子进程
         kill(pid, SIGTERM);
         waitpid(pid, NULL, 0);
+        LOG_INFO("聊天会话结束");
     }
     
     return true;
